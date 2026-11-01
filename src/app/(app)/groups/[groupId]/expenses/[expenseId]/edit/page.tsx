@@ -5,6 +5,7 @@ import { useSignedInUser } from "@/components/AuthProvider";
 import { ExpenseForm } from "@/components/ExpenseForm";
 import { BackLink, ErrorText, Loading } from "@/components/ui";
 import { updateExpense } from "@/lib/expenses";
+import { isDeletionApproved } from "@/lib/groups";
 import { useExpense, useGroup } from "@/lib/hooks";
 
 export default function EditExpensePage() {
@@ -25,6 +26,8 @@ export default function EditExpensePage() {
   else if (expense.paidBy !== me) blocked = "Only the person who added this expense can edit it.";
   else if (Object.keys(expense.settled).length > 0) {
     blocked = "Some payments on this expense are confirmed, so it can no longer be edited.";
+  } else if (isDeletionApproved(group)) {
+    blocked = "This group is being deleted, so its expenses can no longer change.";
   }
 
   return (

@@ -1,5 +1,9 @@
 export const CURRENCIES = ["INR", "USD", "EUR", "GBP", "AED", "SGD", "AUD", "CAD", "JPY"];
 
+// The largest expense, in minor units. firestore.rules rejects anything bigger;
+// a unit test checks the two stay the same.
+export const MAX_AMOUNT = 100_000_000_000;
+
 export function fractionDigits(currency: string): number {
   return (
     new Intl.NumberFormat("en", { style: "currency", currency }).resolvedOptions()

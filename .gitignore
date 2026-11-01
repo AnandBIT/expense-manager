@@ -2,6 +2,8 @@
 
 # dependencies
 /node_modules
+# This project uses Yarn (yarn.lock); keep a stray `npm install` from adding npm's lockfile.
+/package-lock.json
 /.pnp
 .pnp.*
 .yarn/*

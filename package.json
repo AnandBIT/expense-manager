@@ -2,6 +2,7 @@
   "name": "expense-manager",
   "version": "0.1.0",
   "private": true,
+  "packageManager": "yarn@1.22.22",
   "scripts": {
     "dev": "next dev",
     "dev:local": "node scripts/with-emulators.mjs auth,firestore \"next dev\"",
@@ -13,6 +14,7 @@
   },
   "dependencies": {
     "firebase": "^12.19.0",
+    "motion": "^14.9.0",
     "next": "16.3.8",
     "react": "19.2.8",
     "react-dom": "19.2.8"
@@ -28,6 +30,7 @@
     "firebase-tools": "^15.32.1",
     "tailwindcss": "^4",
     "typescript": "^5",
+    "vite": "^8.3.2",
     "vitest": "^5.0.3"
   }
 }

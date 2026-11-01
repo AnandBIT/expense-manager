@@ -4,6 +4,7 @@ import { useState } from "react";
 import { today } from "@/lib/dates";
 import { memberName } from "@/lib/groups";
 import {
+  MAX_AMOUNT,
   amountToInput,
   formatMoney,
   parseAmount,
@@ -12,6 +13,7 @@ import {
 } from "@/lib/money";
 import { splitByPercentage, splitEqually, sum } from "@/lib/split";
 import type { Expense, ExpenseInput, Group, SplitType } from "@/lib/types";
+import { SegmentedControl } from "./SegmentedControl";
 import {
   Card,
   ErrorText,
@@ -20,6 +22,7 @@ import {
   errorMessage,
   inputBaseClass,
   inputClass,
+  textareaClass,
 } from "./ui";
 
 const SPLIT_TYPES: { value: SplitType; label: string }[] = [
@@ -47,6 +50,7 @@ function mapValues<T, U>(record: Record<string, T>, fn: (value: T) => U): Record
 export function ExpenseForm({ group, me, initial, submitLabel, onSubmit }: Props) {
   const { currency } = group;
   const [description, setDescription] = useState(initial?.description ?? "");
+  const [notes, setNotes] = useState(initial?.notes ?? "");
   const [amountText, setAmountText] = useState(
     initial ? amountToInput(initial.amount, currency) : "",
   );
@@ -76,6 +80,7 @@ export function ExpenseForm({ group, me, initial, submitLabel, onSubmit }: Props
     if (amount === null || amount === 0) {
       return { problem: amountText.trim() ? "Enter a valid amount." : "Enter the amount you paid." };
     }
+    if (amount > MAX_AMOUNT) return { problem: `An expense can be at most ${money(MAX_AMOUNT)}.` };
     if (participantIds.length === 0) return { problem: "Select at least one person." };
 
     if (splitType === "equal") {
@@ -129,6 +134,7 @@ export function ExpenseForm({ group, me, initial, submitLabel, onSubmit }: Props
     try {
       await onSubmit({
         description: description.trim(),
+        notes: notes.trim() || undefined,
         amount,
         date,
         splitType,
@@ -180,33 +186,31 @@ export function ExpenseForm({ group, me, initial, submitLabel, onSubmit }: Props
             />
           </label>
         </div>
+        <label className="block">
+          <span className="text-sm font-medium">
+            Notes <span className="font-normal text-zinc-500">(optional)</span>
+          </span>
+          <textarea
+            className={`${textareaClass} mt-1`}
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            maxLength={500}
+            rows={2}
+            placeholder="Anything the others should know, e.g. what was included"
+          />
+        </label>
       </Card>
 
       <Card className="space-y-4">
         <div>
           <span className="text-sm font-medium">Split</span>
-          <div
-            role="radiogroup"
-            aria-label="How to split"
-            className="mt-2 grid grid-cols-3 gap-1 rounded-lg bg-zinc-100 p-1 dark:bg-zinc-800"
-          >
-            {SPLIT_TYPES.map((type) => (
-              <button
-                key={type.value}
-                type="button"
-                role="radio"
-                aria-checked={splitType === type.value}
-                onClick={() => setSplitType(type.value)}
-                className={`rounded-md px-2 py-1.5 text-xs font-medium sm:text-sm ${
-                  splitType === type.value
-                    ? "bg-white shadow-sm dark:bg-zinc-950"
-                    : "text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
-                }`}
-              >
-                {type.label}
-              </button>
-            ))}
-          </div>
+          <SegmentedControl
+            label="How to split"
+            options={SPLIT_TYPES}
+            value={splitType}
+            onChange={setSplitType}
+            className="mt-2"
+          />
         </div>
 
         <div>

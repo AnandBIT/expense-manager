@@ -5,6 +5,7 @@ import { useSignedInUser } from "@/components/AuthProvider";
 import { ExpenseForm } from "@/components/ExpenseForm";
 import { BackLink, ErrorText, Loading } from "@/components/ui";
 import { createExpense } from "@/lib/expenses";
+import { isDeletionApproved } from "@/lib/groups";
 import { useGroup } from "@/lib/hooks";
 
 export default function NewExpensePage() {
@@ -20,15 +21,19 @@ export default function NewExpensePage() {
     <div className="space-y-4">
       <BackLink href={`/groups/${groupId}`}>{group.name}</BackLink>
       <h1 className="text-xl font-semibold">Add expense</h1>
-      <ExpenseForm
-        group={group}
-        me={me}
-        submitLabel="Add expense"
-        onSubmit={async (input) => {
-          await createExpense(groupId, me, input);
-          router.replace(`/groups/${groupId}`);
-        }}
-      />
+      {isDeletionApproved(group) ? (
+        <p className="text-sm text-zinc-500">This group is being deleted, so no new expenses can be added.</p>
+      ) : (
+        <ExpenseForm
+          group={group}
+          me={me}
+          submitLabel="Add expense"
+          onSubmit={async (input) => {
+            await createExpense(groupId, me, input);
+            router.replace(`/groups/${groupId}`);
+          }}
+        />
+      )}
     </div>
   );
 }

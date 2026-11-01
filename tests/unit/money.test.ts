@@ -1,5 +1,12 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { amountToInput, formatMoney, parseAmount, parsePercent } from "../../src/lib/money";
+import { MAX_AMOUNT, amountToInput, formatMoney, parseAmount, parsePercent } from "../../src/lib/money";
+
+describe("MAX_AMOUNT", () => {
+  it("matches the cap in firestore.rules", () => {
+    expect(readFileSync("firestore.rules", "utf8")).toContain(`data.amount <= ${MAX_AMOUNT}`);
+  });
+});
 
 describe("parseAmount", () => {
   it("reads rupees into paise", () => {

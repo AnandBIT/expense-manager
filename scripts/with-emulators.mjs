@@ -61,7 +61,7 @@ for (const port of ports) {
 }
 
 const emulators = spawn(
-  `npx firebase emulators:start --only ${only} --project demo-expense-manager`,
+  `yarn firebase emulators:start --only ${only} --project demo-expense-manager`,
   { shell: true, detached: !isWindows, stdio: ["ignore", "inherit", "inherit"] },
 );
 

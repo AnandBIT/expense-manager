@@ -2,7 +2,7 @@ rules_version = '2';
 
 // Paste this into Firebase console → Firestore Database → Rules, then Publish.
 // There is no backend: these rules are the app's only access control, so
-// every collection must be listed here. Tests: npm run test:rules
+// every collection must be listed here. Tests: yarn test:rules
 service cloud.firestore {
   match /databases/{database}/documents {
 
@@ -12,6 +12,10 @@ service cloud.firestore {
 
     function groupPath(groupId) {
       return /databases/$(database)/documents/groups/$(groupId);
+    }
+
+    function invitePath(code) {
+      return /databases/$(database)/documents/invites/$(code);
     }
 
     function isGroupMember(groupId) {
@@ -41,6 +45,11 @@ service cloud.firestore {
     }
 
     // ---------- groups ----------
+    // memberIds: the current members, the only people who can see or change
+    // the group. members: name and photo of everyone who has ever joined, so
+    // old expenses still show people who left or were removed. The app checks
+    // that people have settled all their shares before they leave or are
+    // removed; rules can't scan the expenses to check that.
 
     function isValidMember(member) {
       return member.keys().hasOnly(['name', 'photoURL', 'joinedWith'])
@@ -48,55 +57,183 @@ service cloud.firestore {
         && member.photoURL is string;
     }
 
+    function isValidGroupName(name) {
+      return name is string && name.size() > 0 && name.size() <= 60;
+    }
+
+    // Codes are also document IDs (invites/{code}); randomCode() makes 32 hex digits.
+    function isValidInviteCode(code) {
+      return code is string && code.matches('^[0-9a-f]{32}$');
+    }
+
     function isValidNewGroup(data) {
       let uid = request.auth.uid;
       let fields = ['name', 'currency', 'createdBy', 'createdAt', 'memberIds', 'members', 'inviteCode'];
       return data.keys().hasOnly(fields) && data.keys().hasAll(fields)
-        && data.name is string && data.name.size() > 0 && data.name.size() <= 60
+        && isValidGroupName(data.name)
         && data.currency is string && data.currency.matches('^[A-Z]{3}$')
         && data.createdBy == uid
         && data.createdAt == request.time
         && data.memberIds == [uid]
         && data.members.keys().hasOnly([uid]) && data.members.size() == 1
         && isValidMember(data.members[uid])
-        && data.inviteCode is string && data.inviteCode.size() >= 16;
+        && isValidInviteCode(data.inviteCode);
     }
 
-    // A non-member adds exactly themselves, proving they hold the invite code.
-    function isJoining() {
-      let uid = request.auth.uid;
-      let before = resource.data;
-      let after = request.resource.data;
-      return !(uid in before.memberIds)
-        && before.memberIds.size() < 50
-        && after.diff(before).affectedKeys().hasOnly(['memberIds', 'members'])
-        && after.memberIds == before.memberIds.concat([uid])
-        && after.members.diff(before.members).affectedKeys().hasOnly([uid])
-        && isValidMember(after.members[uid])
-        && after.members[uid].joinedWith == before.inviteCode;
+    // Deleting needs everyone. Whoever asks adds `deletion` with themselves in
+    // approvedBy, and the others add themselves. Once approvedBy covers every
+    // current member the group is frozen for good: any member deletes the
+    // expenses, then the invite and the group in one batch.
+    function deletionApproved(group) {
+      return 'deletion' in group && group.deletion.approvedBy.hasAll(group.memberIds);
     }
 
     match /groups/{groupId} {
+
+      // A non-member adds exactly themselves, proving they hold the invite code.
+      // People who left rejoin the same way. Nobody joins while deletion is pending.
+      function isJoining() {
+        let uid = request.auth.uid;
+        let before = resource.data;
+        let after = request.resource.data;
+        return !(uid in before.memberIds)
+          && !('deletion' in before)
+          && before.memberIds.size() < 50
+          && after.diff(before).affectedKeys().hasOnly(['memberIds', 'members'])
+          && after.memberIds == before.memberIds.concat([uid])
+          && after.members.diff(before.members).affectedKeys().hasOnly([uid])
+          && isValidMember(after.members[uid])
+          && after.members[uid].joinedWith == before.inviteCode;
+      }
+
+      // A member takes themselves out; their name stays in `members`. The last
+      // member can't leave (they delete the group instead).
+      function isLeaving() {
+        let uid = request.auth.uid;
+        let before = resource.data;
+        let after = request.resource.data;
+        return uid in before.memberIds
+          && after.diff(before).affectedKeys().hasOnly(['memberIds'])
+          && after.memberIds == before.memberIds.removeAll([uid])
+          && after.memberIds.size() > 0;
+      }
+
+      // In this batch the group moves to a new code: the old invite is deleted
+      // and a new one points at this group, so the old link stops working.
+      function rotatesInvite(before, after) {
+        return isValidInviteCode(after.inviteCode)
+          && after.inviteCode != before.inviteCode
+          && !existsAfter(invitePath(before.inviteCode))
+          && getAfter(invitePath(after.inviteCode)).data.groupId == groupId;
+      }
+
+      // A member removes exactly one other member and resets the invite, so the
+      // removed person can't rejoin with the link they have. An open deletion
+      // request is dropped, so removing someone can't skip their vote.
+      function isRemovingMember() {
+        let before = resource.data;
+        let after = request.resource.data;
+        return request.auth.uid in after.memberIds
+          && after.diff(before).affectedKeys().hasOnly(['memberIds', 'inviteCode', 'deletion'])
+          && after.memberIds.size() == before.memberIds.size() - 1
+          && before.memberIds.hasAll(after.memberIds)
+          && after.memberIds.toSet().size() == after.memberIds.size()
+          && !deletionApproved(before)
+          && !('deletion' in after)
+          && rotatesInvite(before, after);
+      }
+
+      // Any member renames; the join page's copy of the name changes in the same batch.
+      function isRenaming() {
+        let before = resource.data;
+        let after = request.resource.data;
+        return request.auth.uid in before.memberIds
+          && after.diff(before).affectedKeys().hasOnly(['name'])
+          && isValidGroupName(after.name)
+          && !deletionApproved(before)
+          && getAfter(invitePath(after.inviteCode)).data.groupName == after.name;
+      }
+
+      // Any member resets the invite link; the old one stops working at once.
+      function isResettingInvite() {
+        let before = resource.data;
+        let after = request.resource.data;
+        return request.auth.uid in before.memberIds
+          && after.diff(before).affectedKeys().hasOnly(['inviteCode'])
+          && !deletionApproved(before)
+          && rotatesInvite(before, after);
+      }
+
+      // Asking to delete counts as the asker's own approval.
+      function isRequestingDeletion() {
+        let uid = request.auth.uid;
+        let before = resource.data;
+        let after = request.resource.data;
+        return uid in before.memberIds
+          && !('deletion' in before)
+          && after.diff(before).affectedKeys().hasOnly(['deletion'])
+          && after.deletion.keys().hasOnly(['requestedBy', 'requestedAt', 'approvedBy'])
+          && after.deletion.requestedBy == uid
+          && after.deletion.requestedAt == request.time
+          && after.deletion.approvedBy == [uid];
+      }
+
+      // A member adds their own approval and nothing else.
+      function isApprovingDeletion() {
+        let uid = request.auth.uid;
+        let before = resource.data;
+        let after = request.resource.data;
+        return uid in before.memberIds
+          && 'deletion' in before
+          && !(uid in before.deletion.approvedBy)
+          && after.diff(before).affectedKeys().hasOnly(['deletion'])
+          && after.deletion.diff(before.deletion).affectedKeys().hasOnly(['approvedBy'])
+          && after.deletion.approvedBy == before.deletion.approvedBy.concat([uid]);
+      }
+
+      // Any member can turn the request down until everyone has approved. After
+      // that it can only be finished, so a half-deleted group can't come back.
+      function isCancellingDeletion() {
+        let before = resource.data;
+        let after = request.resource.data;
+        return request.auth.uid in before.memberIds
+          && 'deletion' in before
+          && !deletionApproved(before)
+          && after.diff(before).affectedKeys().hasOnly(['deletion'])
+          && !('deletion' in after);
+      }
+
       allow read: if signedIn() && request.auth.uid in resource.data.memberIds;
       allow create: if signedIn() && isValidNewGroup(request.resource.data);
-      allow update: if signedIn() && isJoining();
-      allow delete: if false;
+      allow update: if signedIn() && (
+        isJoining() || isLeaving() || isRemovingMember() || isRenaming()
+        || isResettingInvite() || isRequestingDeletion() || isApprovingDeletion()
+        || isCancellingDeletion());
+      // The last step of deleting. The app deletes the expenses first (rules
+      // can't check that), and the invite must go in the same batch. A group
+      // that's already gone counts as deleted, so a retried batch succeeds.
+      allow delete: if signedIn() && (resource == null || (
+        request.auth.uid in resource.data.memberIds
+        && deletionApproved(resource.data)
+        && !existsAfter(invitePath(resource.data.inviteCode))));
 
       // ---------- expenses ----------
       // Rules can't loop, so they can't check that shares add up to the amount;
       // the app does that. They do make sure only the payer can write an
-      // expense, so nobody can change what someone else entered.
+      // expense, so nobody can change what someone else entered. `group` is
+      // the parent group document, read once per write.
 
-      function isValidExpense(data) {
+      function isValidExpense(data, group) {
         let required = ['description', 'amount', 'paidBy', 'splitType', 'participantIds',
                         'shares', 'date', 'createdAt', 'updatedAt', 'paidMarks', 'settled'];
-        return data.keys().hasOnly(required.concat(['percentages'])) && data.keys().hasAll(required)
+        return data.keys().hasOnly(required.concat(['percentages', 'notes'])) && data.keys().hasAll(required)
           && data.description is string && data.description.size() > 0 && data.description.size() <= 100
+          && (!('notes' in data) || (data.notes is string && data.notes.size() <= 500))
           && data.amount is int && data.amount > 0 && data.amount <= 100000000000
           && data.paidBy == request.auth.uid
           && data.splitType in ['equal', 'fixed', 'percentage']
           && data.participantIds is list && data.participantIds.size() > 0
-          && data.participantIds.hasOnly(get(groupPath(groupId)).data.memberIds)
+          && data.participantIds.hasOnly(group.memberIds)
           && data.shares is map && data.shares.keys().hasOnly(data.participantIds)
           && data.shares.size() == data.participantIds.size()
           && (!('percentages' in data) || data.percentages is map)
@@ -106,10 +243,10 @@ service cloud.firestore {
       }
 
       // The payer edits their own expense. Locked once any share is settled.
-      function isPayerEditing() {
+      function isPayerEditing(group) {
         return resource.data.paidBy == request.auth.uid
           && resource.data.settled.size() == 0
-          && isValidExpense(request.resource.data)
+          && isValidExpense(request.resource.data, group)
           && request.resource.data.createdAt == resource.data.createdAt;
       }
 
@@ -140,34 +277,68 @@ service cloud.firestore {
           && marksDiff.addedKeys().size() == 0 && marksDiff.changedKeys().size() == 0;
       }
 
+      // Once deletion is approved, expenses are frozen (nothing new, no edits or
+      // payment marks) and any member may delete any of them, settled or not.
+      function canAddExpense(group) {
+        return request.auth.uid in group.memberIds
+          && !deletionApproved(group)
+          && isValidExpense(request.resource.data, group)
+          && request.resource.data.createdAt == request.time;
+      }
+
+      function canChangeExpense(group) {
+        return request.auth.uid in group.memberIds
+          && !deletionApproved(group)
+          && (isPayerEditing(group) || isDebtorMarkingPaid() || isPayerConfirming());
+      }
+
+      function canDeleteExpense(group) {
+        return request.auth.uid in group.memberIds
+          && (deletionApproved(group)
+            || (resource.data.paidBy == request.auth.uid && resource.data.settled.size() == 0));
+      }
+
       match /expenses/{expenseId} {
         allow read: if isGroupMember(groupId);
-        allow create: if isGroupMember(groupId)
-          && isValidExpense(request.resource.data)
-          && request.resource.data.createdAt == request.time;
-        allow update: if isGroupMember(groupId)
-          && (isPayerEditing() || isDebtorMarkingPaid() || isPayerConfirming());
-        allow delete: if isGroupMember(groupId)
-          && resource.data.paidBy == request.auth.uid
-          && resource.data.settled.size() == 0;
+        allow create: if signedIn() && canAddExpense(get(groupPath(groupId)).data);
+        allow update: if signedIn() && canChangeExpense(get(groupPath(groupId)).data);
+        allow delete: if signedIn() && canDeleteExpense(get(groupPath(groupId)).data);
       }
     }
 
     // ---------- invites ----------
     // invites/{code} → { groupId, groupName }. The code is a 128-bit random
-    // value, so only people who were sent the link can look it up.
+    // value, so only people who were sent the link can look it up. A group has
+    // one invite, for its current code and showing its current name, written
+    // in the same batch as the group change it mirrors.
 
     match /invites/{code} {
+      // Written by a member, and matches the group's code and name after this batch.
+      function isCurrentInvite(invite) {
+        let group = getAfter(groupPath(invite.groupId)).data;
+        return request.auth.uid in group.memberIds
+          && group.inviteCode == code
+          && invite.groupName == group.name;
+      }
+
+      // An invite goes when its group moves to a new code or is deleted in the same batch.
+      function isRetired() {
+        let groupId = resource.data.groupId;
+        return request.auth.uid in get(groupPath(groupId)).data.memberIds
+          && (!existsAfter(groupPath(groupId)) || getAfter(groupPath(groupId)).data.inviteCode != code);
+      }
+
       allow get: if signedIn();
       allow list: if false;
       allow create: if signedIn()
         && request.resource.data.keys().hasOnly(['groupId', 'groupName'])
         && request.resource.data.groupId is string
-        && request.resource.data.groupName is string
-        && request.resource.data.groupName.size() <= 60
-        && getAfter(groupPath(request.resource.data.groupId)).data.inviteCode == code
-        && request.auth.uid in getAfter(groupPath(request.resource.data.groupId)).data.memberIds;
-      allow update, delete: if false;
+        && isCurrentInvite(request.resource.data);
+      allow update: if signedIn()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['groupName'])
+        && isCurrentInvite(request.resource.data);
+      // Deleting an invite that isn't there changes nothing, so it's allowed.
+      allow delete: if signedIn() && (resource == null || isRetired());
     }
   }
 }

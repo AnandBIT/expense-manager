@@ -33,8 +33,11 @@ export function debtsInExpense(expense: Expense): Debt[] {
     }));
 }
 
+// True once every share someone owes on it is confirmed. An expense nobody owes
+// anything on (only the payer shared it) was never settled.
 export function isFullySettled(expense: Expense): boolean {
-  return debtsInExpense(expense).every((debt) => debt.status === "settled");
+  const debts = debtsInExpense(expense);
+  return debts.length > 0 && debts.every((debt) => debt.status === "settled");
 }
 
 // What `me` and one other person owe each other, counting only debts the

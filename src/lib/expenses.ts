@@ -4,10 +4,15 @@ import {
   deleteDoc,
   deleteField,
   doc,
+  getDocsFromServer,
+  limit,
   onSnapshot,
+  query,
   serverTimestamp,
   updateDoc,
+  writeBatch,
 } from "firebase/firestore";
+import { newestFirst } from "./expenseList";
 import { db } from "./firebase";
 import type { Expense, ExpenseInput } from "./types";
 
@@ -17,12 +22,6 @@ function expensesOf(groupId: string) {
 
 function expenseRef(groupId: string, expenseId: string) {
   return doc(db(), "groups", groupId, "expenses", expenseId);
-}
-
-// Newest first by the day it was spent, then by when it was added.
-function newestFirst(a: Expense, b: Expense): number {
-  if (a.date !== b.date) return a.date < b.date ? 1 : -1;
-  return (b.createdAt?.toMillis() ?? Infinity) - (a.createdAt?.toMillis() ?? Infinity);
 }
 
 export function watchExpenses(
@@ -56,8 +55,8 @@ export function watchExpense(
 
 // Firestore rejects `undefined`, so optional fields are left out instead.
 function fieldsOf(input: ExpenseInput) {
-  const { percentages, ...rest } = input;
-  return percentages ? { ...rest, percentages } : rest;
+  const { percentages, notes, ...rest } = input;
+  return { ...rest, ...(percentages ? { percentages } : {}), ...(notes ? { notes } : {}) };
 }
 
 export async function createExpense(
@@ -86,6 +85,7 @@ export async function updateExpense(
   await updateDoc(expenseRef(groupId, expenseId), {
     ...input,
     percentages: input.percentages ?? deleteField(),
+    notes: input.notes ?? deleteField(),
     updatedAt: serverTimestamp(),
     paidMarks: {},
     settled: {},
@@ -94,6 +94,23 @@ export async function updateExpense(
 
 export async function deleteExpense(groupId: string, expenseId: string): Promise<void> {
   await deleteDoc(expenseRef(groupId, expenseId));
+}
+
+// Every expense in the group, a page at a time, until the server has none
+// left. Only allowed once everyone has approved deleting the group. Batches of
+// 10: each delete's rule reads the group, and rules allow 20 reads per batch.
+export async function deleteAllExpenses(groupId: string): Promise<void> {
+  for (;;) {
+    const page = await getDocsFromServer(query(expensesOf(groupId), limit(200)));
+    if (page.empty) return;
+    const commits = [];
+    for (let i = 0; i < page.docs.length; i += 10) {
+      const batch = writeBatch(db());
+      for (const expense of page.docs.slice(i, i + 10)) batch.delete(expense.ref);
+      commits.push(batch.commit());
+    }
+    await Promise.all(commits);
+  }
 }
 
 // Debtor: "I've paid" → shows as pending verification from the payer.

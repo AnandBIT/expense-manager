@@ -10,6 +10,13 @@ export type Member = {
   joinedWith?: string;
 };
 
+export type GroupDeletion = {
+  requestedBy: string;
+  requestedAt: Timestamp | null;
+  // Starts with whoever asked. The group is deleted once this covers every member.
+  approvedBy: string[];
+};
+
 export type Group = {
   id: string;
   name: string;
@@ -17,9 +24,13 @@ export type Group = {
   createdBy: string;
   // null while a serverTimestamp() write is still pending locally.
   createdAt: Timestamp | null;
+  // The current members, the only people who can see the group.
   memberIds: string[];
+  // Everyone who has ever joined, so old expenses still show people who left.
   members: Record<string, Member>;
   inviteCode: string;
+  // Set while someone has asked to delete the group.
+  deletion?: GroupDeletion;
 };
 
 export type SplitType = "equal" | "fixed" | "percentage";
@@ -27,6 +38,8 @@ export type SplitType = "equal" | "fixed" | "percentage";
 export type Expense = {
   id: string;
   description: string;
+  // Optional longer comment, e.g. what was included.
+  notes?: string;
   amount: number;
   // Always the person who added the expense.
   paidBy: string;
@@ -49,5 +62,5 @@ export type Expense = {
 
 export type ExpenseInput = Pick<
   Expense,
-  "description" | "amount" | "splitType" | "participantIds" | "shares" | "percentages" | "date"
+  "description" | "notes" | "amount" | "splitType" | "participantIds" | "shares" | "percentages" | "date"
 >;

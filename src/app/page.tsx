@@ -5,18 +5,14 @@ import { useRouter } from "next/navigation";
 import { FirebaseError } from "firebase/app";
 import { useAuth } from "@/components/AuthProvider";
 import { isFirebaseConfigured } from "@/lib/firebase";
+import { safeNextPath } from "@/lib/redirect";
 
 // Closing the Google popup is a normal choice, not an error worth showing.
 const SILENT_ERRORS = new Set(["auth/popup-closed-by-user", "auth/cancelled-popup-request"]);
 
-// Where to go after signing in. Only same-site paths, so the link can't
-// bounce people to another website.
 function destinationAfterSignIn(): string {
   const next = new URLSearchParams(window.location.search).get("next");
-  if (next && next.startsWith("/") && !next.startsWith("//") && !next.startsWith("/\\")) {
-    return next;
-  }
-  return "/dashboard";
+  return safeNextPath(next, window.location.origin);
 }
 
 export default function Home() {

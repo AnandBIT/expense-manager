@@ -76,6 +76,14 @@ describe("netting between two people", () => {
   });
 });
 
+describe("an expense only the payer shares", () => {
+  it("isn't shown as settled, since nobody owed anything", () => {
+    const solo = expense({ id: "solo", paidBy: "A", shares: { A: 50000 } });
+    expect(debtsInExpense(solo)).toEqual([]);
+    expect(isFullySettled(solo)).toBe(false);
+  });
+});
+
 describe("payer who isn't sharing the cost", () => {
   it("is owed the whole amount", () => {
     const gift = expense({ id: "gift", paidBy: "A", shares: { B: 15000, C: 15000 } });

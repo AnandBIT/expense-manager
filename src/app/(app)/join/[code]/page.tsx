@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
+import { FirebaseError } from "firebase/app";
 import { useSignedInUser } from "@/components/AuthProvider";
 import { Card, ErrorText, Loading, buttonClass, errorMessage } from "@/components/ui";
 import { getInvite, isGroupMember, joinGroup, type Invite } from "@/lib/groups";
@@ -42,7 +43,18 @@ export default function JoinPage() {
       await joinGroup(user, invite.groupId, code);
       router.replace(`/groups/${invite.groupId}`);
     } catch (err) {
-      setError(errorMessage(err));
+      if (err instanceof FirebaseError && err.code === "permission-denied") {
+        // Resetting the link (or removing someone) retires this code; otherwise
+        // the rules turn joins down while a group is full or about to be deleted.
+        const linkStillWorks = await getInvite(code).then(Boolean, () => true);
+        setError(
+          linkStillWorks
+            ? "This group can't take new members right now. Ask whoever sent you the link."
+            : "This invite link has expired. Ask whoever sent it for the new one.",
+        );
+      } else {
+        setError(errorMessage(err));
+      }
       setJoining(false);
     }
   }

@@ -5,15 +5,13 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useSignedInUser } from "@/components/AuthProvider";
 import { DebtActions } from "@/components/DebtActions";
-import { BackLink, Card, ErrorText, Loading, MemberAvatar, buttonClass, errorMessage } from "@/components/ui";
-import { debtsInExpense } from "@/lib/balances";
+import { ExpenseShares, SPLIT_LABELS } from "@/components/ExpenseDetails";
+import { BackLink, Card, ErrorText, Loading, buttonClass, errorMessage } from "@/components/ui";
 import { formatDate } from "@/lib/dates";
 import { deleteExpense } from "@/lib/expenses";
-import { memberName } from "@/lib/groups";
+import { isDeletionApproved, memberName } from "@/lib/groups";
 import { useExpense, useGroup } from "@/lib/hooks";
-import { formatMoney, percentToInput } from "@/lib/money";
-
-const SPLIT_LABELS = { equal: "equally", fixed: "by fixed amounts", percentage: "by percentage" };
+import { formatMoney } from "@/lib/money";
 
 export default function ExpensePage() {
   const { groupId, expenseId } = useParams<{ groupId: string; expenseId: string }>();
@@ -38,7 +36,6 @@ export default function ExpensePage() {
   }
 
   const money = (minor: number) => formatMoney(minor, group.currency);
-  const debts = debtsInExpense(expense);
   const isPayer = expense.paidBy === me;
   const locked = Object.keys(expense.settled).length > 0;
   const payerName = isPayer ? "you" : memberName(group, expense.paidBy, me);
@@ -70,35 +67,30 @@ export default function ExpensePage() {
         <p className="shrink-0 text-xl font-semibold">{money(expense.amount)}</p>
       </div>
 
+      {expense.notes && (
+        <Card>
+          <h2 className="text-sm font-medium text-zinc-500">Notes</h2>
+          <p className="mt-1 whitespace-pre-line text-sm">{expense.notes}</p>
+        </Card>
+      )}
+
       <Card>
         <h2 className="text-sm font-medium text-zinc-500">Shares</h2>
-        <ul className="mt-1 divide-y divide-zinc-100 dark:divide-zinc-800">
-          {expense.participantIds.map((id) => {
-            const debt = debts.find((d) => d.from === id);
-            const percentage = expense.percentages?.[id];
-            return (
-              <li key={id} className="flex flex-wrap items-center justify-between gap-2 py-3">
-                <div className="flex min-w-0 items-center gap-2">
-                  <MemberAvatar group={group} uid={id} />
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-medium">{memberName(group, id, me)}</p>
-                    <p className="text-xs text-zinc-500">
-                      {money(expense.shares[id])}
-                      {percentage !== undefined && ` · ${percentToInput(percentage)}%`}
-                      {id === expense.paidBy && " · paid the bill"}
-                    </p>
-                  </div>
-                </div>
-                {debt && <DebtActions group={group} debt={debt} me={me} />}
-              </li>
-            );
-          })}
-        </ul>
+        <ExpenseShares
+          group={group}
+          expense={expense}
+          me={me}
+          renderDebt={(debt) => <DebtActions group={group} debt={debt} me={me} />}
+        />
       </Card>
 
       {isPayer && (
         <div className="space-y-2">
-          {locked ? (
+          {isDeletionApproved(group) ? (
+            <p className="text-xs text-zinc-500">
+              This group is being deleted, so its expenses can no longer change.
+            </p>
+          ) : locked ? (
             <p className="text-xs text-zinc-500">
               Some payments on this expense are confirmed, so it can no longer be edited or deleted.
             </p>

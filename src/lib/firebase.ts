@@ -2,7 +2,7 @@ import { getApp, getApps, initializeApp } from "firebase/app";
 import { connectAuthEmulator, getAuth, type Auth } from "firebase/auth";
 import { connectFirestoreEmulator, getFirestore, type Firestore } from "firebase/firestore";
 
-// `npm run dev:local` sets this to run against the Firebase emulators on this
+// `yarn dev:local` sets this to run against the Firebase emulators on this
 // machine instead of a real project (see firebase.json for the ports).
 const useEmulators = process.env.NEXT_PUBLIC_USE_EMULATORS === "true";
 
