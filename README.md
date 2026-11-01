@@ -17,7 +17,7 @@ Split group expenses and track who owes whom. Next.js frontend, Firebase Authent
 
 ## Try it locally without a Firebase project
 
-Needs [Yarn 1](https://classic.yarnpkg.com) (`npm install -g yarn` if you don't have it) and Java 21+ for the Firebase emulators.
+Needs Node 24, [Yarn 1](https://classic.yarnpkg.com) (`npm install -g yarn` if you don't have it) and Java 21+ for the Firebase emulators.
 
 ```bash
 yarn
