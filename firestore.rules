@@ -1,0 +1,173 @@
+rules_version = '2';
+
+// Paste this into Firebase console → Firestore Database → Rules, then Publish.
+// There is no backend: these rules are the app's only access control, so
+// every collection must be listed here. Tests: npm run test:rules
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function groupPath(groupId) {
+      return /databases/$(database)/documents/groups/$(groupId);
+    }
+
+    function isGroupMember(groupId) {
+      return signedIn() && request.auth.uid in get(groupPath(groupId)).data.memberIds;
+    }
+
+    // ---------- users ----------
+
+    function isValidProfile(data) {
+      return data.keys().hasOnly(['displayName', 'email', 'photoURL', 'createdAt', 'lastLoginAt'])
+        && data.displayName is string && data.displayName.size() <= 100
+        && data.email == request.auth.token.email
+        && data.photoURL is string;
+    }
+
+    // A profile is private to its owner. Groups keep their own copy of each
+    // member's name and photo, so other people never read this document.
+    match /users/{uid} {
+      allow read: if signedIn() && request.auth.uid == uid;
+      allow create: if signedIn() && request.auth.uid == uid
+        && isValidProfile(request.resource.data)
+        && request.resource.data.createdAt == request.time;
+      allow update: if signedIn() && request.auth.uid == uid
+        && isValidProfile(request.resource.data)
+        && request.resource.data.createdAt == resource.data.createdAt;
+      allow delete: if false;
+    }
+
+    // ---------- groups ----------
+
+    function isValidMember(member) {
+      return member.keys().hasOnly(['name', 'photoURL', 'joinedWith'])
+        && member.name is string && member.name.size() > 0 && member.name.size() <= 100
+        && member.photoURL is string;
+    }
+
+    function isValidNewGroup(data) {
+      let uid = request.auth.uid;
+      let fields = ['name', 'currency', 'createdBy', 'createdAt', 'memberIds', 'members', 'inviteCode'];
+      return data.keys().hasOnly(fields) && data.keys().hasAll(fields)
+        && data.name is string && data.name.size() > 0 && data.name.size() <= 60
+        && data.currency is string && data.currency.matches('^[A-Z]{3}$')
+        && data.createdBy == uid
+        && data.createdAt == request.time
+        && data.memberIds == [uid]
+        && data.members.keys().hasOnly([uid]) && data.members.size() == 1
+        && isValidMember(data.members[uid])
+        && data.inviteCode is string && data.inviteCode.size() >= 16;
+    }
+
+    // A non-member adds exactly themselves, proving they hold the invite code.
+    function isJoining() {
+      let uid = request.auth.uid;
+      let before = resource.data;
+      let after = request.resource.data;
+      return !(uid in before.memberIds)
+        && before.memberIds.size() < 50
+        && after.diff(before).affectedKeys().hasOnly(['memberIds', 'members'])
+        && after.memberIds == before.memberIds.concat([uid])
+        && after.members.diff(before.members).affectedKeys().hasOnly([uid])
+        && isValidMember(after.members[uid])
+        && after.members[uid].joinedWith == before.inviteCode;
+    }
+
+    match /groups/{groupId} {
+      allow read: if signedIn() && request.auth.uid in resource.data.memberIds;
+      allow create: if signedIn() && isValidNewGroup(request.resource.data);
+      allow update: if signedIn() && isJoining();
+      allow delete: if false;
+
+      // ---------- expenses ----------
+      // Rules can't loop, so they can't check that shares add up to the amount;
+      // the app does that. They do make sure only the payer can write an
+      // expense, so nobody can change what someone else entered.
+
+      function isValidExpense(data) {
+        let required = ['description', 'amount', 'paidBy', 'splitType', 'participantIds',
+                        'shares', 'date', 'createdAt', 'updatedAt', 'paidMarks', 'settled'];
+        return data.keys().hasOnly(required.concat(['percentages'])) && data.keys().hasAll(required)
+          && data.description is string && data.description.size() > 0 && data.description.size() <= 100
+          && data.amount is int && data.amount > 0 && data.amount <= 100000000000
+          && data.paidBy == request.auth.uid
+          && data.splitType in ['equal', 'fixed', 'percentage']
+          && data.participantIds is list && data.participantIds.size() > 0
+          && data.participantIds.hasOnly(get(groupPath(groupId)).data.memberIds)
+          && data.shares is map && data.shares.keys().hasOnly(data.participantIds)
+          && data.shares.size() == data.participantIds.size()
+          && (!('percentages' in data) || data.percentages is map)
+          && data.date is string && data.date.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+          && data.updatedAt == request.time
+          && data.paidMarks == {} && data.settled == {};
+      }
+
+      // The payer edits their own expense. Locked once any share is settled.
+      function isPayerEditing() {
+        return resource.data.paidBy == request.auth.uid
+          && resource.data.settled.size() == 0
+          && isValidExpense(request.resource.data)
+          && request.resource.data.createdAt == resource.data.createdAt;
+      }
+
+      // A participant marks (or unmarks) their own share as "I've paid".
+      function isDebtorMarkingPaid() {
+        let uid = request.auth.uid;
+        let before = resource.data;
+        let after = request.resource.data;
+        return uid in before.participantIds && uid != before.paidBy
+          && !(uid in before.settled)
+          && after.diff(before).affectedKeys().hasOnly(['paidMarks'])
+          && after.paidMarks.diff(before.paidMarks).affectedKeys().hasOnly([uid])
+          && (!(uid in after.paidMarks) || after.paidMarks[uid] == request.time);
+      }
+
+      // The payer confirms "Received" (adds to settled) or says "Not received"
+      // (removes a paid mark). A settled share can never be un-settled.
+      function isPayerConfirming() {
+        let before = resource.data;
+        let after = request.resource.data;
+        let settledDiff = after.settled.diff(before.settled);
+        let marksDiff = after.paidMarks.diff(before.paidMarks);
+        return request.auth.uid == before.paidBy
+          && after.diff(before).affectedKeys().hasOnly(['paidMarks', 'settled'])
+          && settledDiff.removedKeys().size() == 0 && settledDiff.changedKeys().size() == 0
+          && after.settled.keys().hasOnly(before.participantIds)
+          && !(before.paidBy in after.settled)
+          && marksDiff.addedKeys().size() == 0 && marksDiff.changedKeys().size() == 0;
+      }
+
+      match /expenses/{expenseId} {
+        allow read: if isGroupMember(groupId);
+        allow create: if isGroupMember(groupId)
+          && isValidExpense(request.resource.data)
+          && request.resource.data.createdAt == request.time;
+        allow update: if isGroupMember(groupId)
+          && (isPayerEditing() || isDebtorMarkingPaid() || isPayerConfirming());
+        allow delete: if isGroupMember(groupId)
+          && resource.data.paidBy == request.auth.uid
+          && resource.data.settled.size() == 0;
+      }
+    }
+
+    // ---------- invites ----------
+    // invites/{code} → { groupId, groupName }. The code is a 128-bit random
+    // value, so only people who were sent the link can look it up.
+
+    match /invites/{code} {
+      allow get: if signedIn();
+      allow list: if false;
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly(['groupId', 'groupName'])
+        && request.resource.data.groupId is string
+        && request.resource.data.groupName is string
+        && request.resource.data.groupName.size() <= 60
+        && getAfter(groupPath(request.resource.data.groupId)).data.inviteCode == code
+        && request.auth.uid in getAfter(groupPath(request.resource.data.groupId)).data.memberIds;
+      allow update, delete: if false;
+    }
+  }
+}
